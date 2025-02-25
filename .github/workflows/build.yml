@@ -33,61 +33,101 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
-      
-      # 为不同操作系统打包
-      - name: Package for Windows
+
+      # Windows EXE 打包
+      - name: Setup Launch4j
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y launch4j
+
+      - name: Create Windows Executable
         run: |
           mkdir -p release/windows
-          cp target/*.jar release/windows/
-          echo "@echo off" > release/windows/start.bat
-          echo "java -jar *.jar" >> release/windows/start.bat
-          cd release && zip -r windows.zip windows/
+          cp target/*.jar release/windows/app.jar
+          
+          # 创建 Launch4j 配置文件
+          cat > config.xml << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <launch4jConfig>
+            <dontWrapJar>false</dontWrapJar>
+            <headerType>console</headerType>
+            <jar>release/windows/app.jar</jar>
+            <outfile>release/windows/app.exe</outfile>
+            <errTitle>Error</errTitle>
+            <jre>
+              <path>%JAVA_HOME%;%PATH%</path>
+              <minVersion>1.8.0</minVersion>
+            </jre>
+          </launch4jConfig>
+          EOF
+          
+          launch4j config.xml
+          cd release && zip -r windows-exe.zip windows/
 
-      - name: Package for Linux
-        run: |
-          mkdir -p release/linux
-          cp target/*.jar release/linux/
-          echo "#!/bin/bash" > release/linux/start.sh
-          echo "java -jar *.jar" >> release/linux/start.sh
-          chmod +x release/linux/start.sh
-          cd release && tar -czf linux.tar.gz linux/
+      # macOS DMG 打包
+      - name: Setup macOS Build Environment
+        if: runner.os == 'macOS'
+        uses: actions/setup-java@v3
+        with:
+          java-version: '14'  # jpackage 需要 JDK 14+
+          distribution: 'adopt'
 
-      - name: Package for macOS
+      - name: Create macOS DMG
         run: |
           mkdir -p release/macos
-          cp target/*.jar release/macos/
+          cp target/*.jar release/macos/app.jar
+          
+          # 创建启动脚本
           echo "#!/bin/bash" > release/macos/start.sh
-          echo "java -jar *.jar" >> release/macos/start.sh
+          echo "java -jar app.jar" >> release/macos/start.sh
           chmod +x release/macos/start.sh
-          cd release && zip -r macos.zip macos/
-      
-      # 上传发布包
-      - name: Upload Windows Release
+          
+          # 创建 app 目录结构
+          mkdir -p release/macos/App.app/Contents/{MacOS,Resources}
+          cp release/macos/app.jar release/macos/App.app/Contents/Resources/
+          cp release/macos/start.sh release/macos/App.app/Contents/MacOS/
+          
+          # 创建 Info.plist
+          cat > release/macos/App.app/Contents/Info.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>start.sh</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.app</string>
+            <key>CFBundleName</key>
+            <string>App</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+          </dict>
+          </plist>
+          EOF
+          
+          # 创建 DMG
+          hdiutil create -volname "App" -srcfolder release/macos/App.app -ov -format UDZO release/macos/app.dmg
+
+      # 上传 Windows EXE
+      - name: Upload Windows EXE
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/windows.zip
-          asset_name: windows.zip
+          asset_path: release/windows-exe.zip
+          asset_name: windows-exe.zip
           asset_content_type: application/zip
 
-      - name: Upload Linux Release
+      # 上传 macOS DMG
+      - name: Upload macOS DMG
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/linux.tar.gz
-          asset_name: linux.tar.gz
-          asset_content_type: application/gzip
-
-      - name: Upload macOS Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: release/macos.zip
-          asset_name: macos.zip
-          asset_content_type: application/zip 
+          asset_path: release/macos/app.dmg
+          asset_name: app.dmg
+          asset_content_type: application/x-apple-diskimage
